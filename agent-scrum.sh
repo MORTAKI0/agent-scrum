@@ -11,6 +11,8 @@ MAX_RETRIES=3
 BASE_BRANCH="main"
 
 LATEST_RUN_FILE="$WORKSPACE/latest-run.txt"
+ACTIVE_RUN_DIR=""
+BRANCH_CLEANUP_DONE=0
 
 log() {
   printf '[agent-scrum] %s\n' "$*"
@@ -60,8 +62,12 @@ write_changed_files() {
 
   (
     cd "$REPO_PATH"
-    git diff --name-only \
+    {
+      git diff --name-only
+      git ls-files --others --exclude-standard
+    } \
       | grep -Ev '^(test-results/\.last-run\.json|playwright/\.auth/)' \
+      | awk 'NF && !seen[$0]++' \
       > "$run_dir/changed-files.txt" || true
   )
 
@@ -262,18 +268,39 @@ append_story_log() {
   local result="$3"
   local attempts="$4"
   local run_dir="$5"
+  local story_type
+  local branch
+  local retry_reason
 
   local changed_files_text="(none)"
   if [[ -s "$run_dir/changed-files.txt" ]]; then
     changed_files_text="$(sed 's/^/- /' "$run_dir/changed-files.txt")"
   fi
 
+  story_type="$(read_story_class_scalar "$run_dir" "story_type" | tr -d '\r' | xargs)"
+  [[ -n "$story_type" ]] || story_type="unknown"
+
+  branch="$(read_run_meta_scalar "$run_dir" "BRANCH" | tr -d '\r' | xargs)"
+  [[ -n "$branch" ]] || branch="$(current_branch)"
+
+  retry_reason="$(read_run_meta_scalar "$run_dir" "RETRY_REASON" | tr -d '\r' | xargs)"
+  if [[ -z "$retry_reason" ]]; then
+    if (( attempts > 0 )); then
+      retry_reason="Validation failed and required retry analysis."
+    else
+      retry_reason="none"
+    fi
+  fi
+
   {
     printf '## %s\n' "$(date '+%Y-%m-%d')"
     printf 'Run ID: %s\n' "$run_id"
     printf 'Story: %s\n' "$story"
+    printf 'Type: %s\n' "$story_type"
     printf 'Result: %s\n' "$result"
     printf 'Attempts: %s\n' "$attempts"
+    printf 'Branch: %s\n' "$branch"
+    printf 'Retry reason: %s\n' "$retry_reason"
     printf 'Files changed:\n%s\n' "$changed_files_text"
     printf 'Artifacts:\n'
     if [[ -f "$run_dir/repo-snapshot.md" ]]; then
@@ -287,6 +314,12 @@ append_story_log() {
     fi
     if [[ -f "$run_dir/PLAN.md" ]]; then
       printf -- '- %s/PLAN.md\n' "$run_dir"
+    fi
+    if [[ -f "$run_dir/RECENT-RUNS.md" ]]; then
+      printf -- '- %s/RECENT-RUNS.md\n' "$run_dir"
+    fi
+    if [[ -f "$run_dir/TEST-PLAN.md" ]]; then
+      printf -- '- %s/TEST-PLAN.md\n' "$run_dir"
     fi
     if [[ "$result" == "PASS" ]]; then
       printf -- '- %s/validation-output.txt\n' "$run_dir"
@@ -310,6 +343,13 @@ write_run_meta() {
   local status="$3"
   local attempts="$4"
   local run_dir="$5"
+  local branch
+  local branch_strategy
+  local retry_reason
+
+  branch="$(read_run_meta_scalar "$run_dir" "BRANCH" | tr -d '\r')"
+  branch_strategy="$(read_run_meta_scalar "$run_dir" "BRANCH_STRATEGY" | tr -d '\r')"
+  retry_reason="$(read_run_meta_scalar "$run_dir" "RETRY_REASON" | tr -d '\r')"
 
   cat > "$run_dir/run-meta.env" <<EOF
 RUN_ID=$run_id
@@ -318,6 +358,16 @@ REPO_PATH=$REPO_PATH
 STATUS=$status
 ATTEMPTS=$attempts
 EOF
+
+  if [[ -n "$branch" ]]; then
+    printf 'BRANCH=%s\n' "$branch" >> "$run_dir/run-meta.env"
+  fi
+  if [[ -n "$branch_strategy" ]]; then
+    printf 'BRANCH_STRATEGY=%s\n' "$branch_strategy" >> "$run_dir/run-meta.env"
+  fi
+  if [[ -n "$retry_reason" ]]; then
+    printf 'RETRY_REASON=%s\n' "$retry_reason" >> "$run_dir/run-meta.env"
+  fi
 }
 
 generate_repo_snapshot() {
@@ -406,6 +456,48 @@ read_story_class_list() {
   ' "$story_class_file"
 }
 
+read_run_meta_scalar() {
+  local run_dir="$1"
+  local key="$2"
+  local run_meta_file="$run_dir/run-meta.env"
+
+  [[ -f "$run_meta_file" ]] || return 0
+
+  awk -v key="$key" -F'=' '
+    $1 == key {
+      print substr($0, index($0, "=") + 1)
+      exit
+    }
+  ' "$run_meta_file"
+}
+
+set_run_meta_field() {
+  local run_dir="$1"
+  local key="$2"
+  local value="$3"
+  local run_meta_file="$run_dir/run-meta.env"
+  local temp_file
+
+  [[ -f "$run_meta_file" ]] || fail "run-meta.env is missing: $run_meta_file"
+
+  temp_file="$(mktemp)"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    $0 ~ "^" key "=" {
+      print key "=" value
+      updated = 1
+      next
+    }
+    { print $0 }
+    END {
+      if (updated == 0) {
+        print key "=" value
+      }
+    }
+  ' "$run_meta_file" > "$temp_file"
+  mv "$temp_file" "$run_meta_file"
+}
+
 ensure_story_class_contract() {
   local run_dir="$1"
   local story_class_file="$run_dir/story-class.md"
@@ -425,11 +517,16 @@ ensure_story_class_contract() {
 
 run_classifier() {
   local run_dir="$1"
+  local recent_runs_file="${2:-}"
   local story_class_file="$run_dir/story-class.md"
   local prompt_file="$PROMPTS_DIR/classifier.txt"
 
   log "Running classifier..."
-  run_codex_prompt "$prompt_file" "$story_class_file"
+  if [[ -n "$recent_runs_file" && -f "$recent_runs_file" ]]; then
+    run_codex_prompt "$prompt_file" "$story_class_file" "$recent_runs_file"
+  else
+    run_codex_prompt "$prompt_file" "$story_class_file"
+  fi
   ensure_story_class_contract "$run_dir"
 }
 
@@ -501,6 +598,158 @@ load_skills() {
   [[ -s "$skill_context_file" ]] || fail "SKILL-CONTEXT.md was not created or is empty: $skill_context_file"
 }
 
+manage_branch() {
+  local run_dir="$1"
+  local branch_strategy
+  local branch_name
+  local active_branch
+
+  branch_strategy="$(read_story_class_scalar "$run_dir" "branch_strategy" | tr -d '\r' | xargs)"
+  branch_name="$(read_story_class_scalar "$run_dir" "branch_name" | tr -d '\r' | xargs)"
+
+  if [[ "$branch_strategy" == "feature-branch" && -n "$branch_name" && "$branch_name" != "none" ]]; then
+    log "Branch strategy is feature-branch; checking out $branch_name"
+    if git -C "$REPO_PATH" show-ref --verify --quiet "refs/heads/$branch_name"; then
+      git -C "$REPO_PATH" checkout "$branch_name" >/dev/null
+    else
+      git -C "$REPO_PATH" checkout -b "$branch_name" >/dev/null
+    fi
+    set_run_meta_field "$run_dir" "BRANCH" "$branch_name"
+    set_run_meta_field "$run_dir" "BRANCH_STRATEGY" "feature-branch"
+    return 0
+  fi
+
+  active_branch="$(current_branch)"
+  set_run_meta_field "$run_dir" "BRANCH" "$active_branch"
+  set_run_meta_field "$run_dir" "BRANCH_STRATEGY" "direct"
+}
+
+cleanup_branch() {
+  local run_dir="$1"
+  local branch_strategy
+  local branch_name
+  local active_branch
+
+  [[ -f "$run_dir/run-meta.env" ]] || return 0
+
+  branch_strategy="$(read_run_meta_scalar "$run_dir" "BRANCH_STRATEGY" | tr -d '\r' | xargs)"
+  [[ "$branch_strategy" == "feature-branch" ]] || return 0
+
+  branch_name="$(read_run_meta_scalar "$run_dir" "BRANCH" | tr -d '\r' | xargs)"
+  active_branch="$(current_branch)"
+  if [[ "$active_branch" != "$BASE_BRANCH" ]]; then
+    if ! git -C "$REPO_PATH" checkout "$BASE_BRANCH" >/dev/null; then
+      log "Warning: could not checkout $BASE_BRANCH during cleanup; leaving current branch unchanged"
+      return 0
+    fi
+  fi
+
+  log "Feature branch kept for inspection: $branch_name"
+  log "To merge later: git -C $REPO_PATH checkout $BASE_BRANCH && git -C $REPO_PATH merge $branch_name"
+  log "To delete later: git -C $REPO_PATH branch -d $branch_name"
+}
+
+build_memory_feed() {
+  local run_dir="$1"
+  local recent_runs_file="$run_dir/RECENT-RUNS.md"
+  local story_type
+  local cutoff_date
+  local temp_entries
+
+  story_type="$(read_story_class_scalar "$run_dir" "story_type" | tr -d '\r' | xargs)"
+  [[ -n "$story_type" ]] || return 0
+  [[ -f "$STORY_LOG" ]] || return 0
+
+  if ! cutoff_date="$(date -u -d '60 days ago' '+%Y-%m-%d' 2>/dev/null)"; then
+    cutoff_date="$(date -u -v-60d '+%Y-%m-%d')"
+  fi
+
+  temp_entries="$(mktemp)"
+  awk -v story_type="$story_type" -v cutoff_date="$cutoff_date" '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    BEGIN {
+      RS = "---\n"
+      ORS = ""
+      count = 0
+    }
+    {
+      date = ""
+      run_id = ""
+      story = ""
+      type = ""
+      result = ""
+      attempts = ""
+      branch = "unknown"
+      retry_reason = "none"
+
+      n = split($0, lines, "\n")
+      for (i = 1; i <= n; i++) {
+        line = lines[i]
+        gsub(/\r/, "", line)
+        if (line ~ /^## /) {
+          date = trim(substr(line, 4))
+        } else if (line ~ /^Run ID: /) {
+          run_id = trim(substr(line, 9))
+        } else if (line ~ /^Story: /) {
+          story = trim(substr(line, 8))
+        } else if (line ~ /^Type: /) {
+          type = trim(substr(line, 7))
+        } else if (line ~ /^Result: /) {
+          result = trim(substr(line, 9))
+        } else if (line ~ /^Attempts: /) {
+          attempts = trim(substr(line, 11))
+        } else if (line ~ /^Branch: /) {
+          branch = trim(substr(line, 9))
+        } else if (line ~ /^Retry reason: /) {
+          retry_reason = trim(substr(line, 15))
+        }
+      }
+
+      if (type == story_type && date >= cutoff_date) {
+        count++
+        dates[count] = date
+        run_ids[count] = run_id
+        stories[count] = story
+        results[count] = result
+        attempts_list[count] = attempts
+        branches[count] = branch
+        retry_reasons[count] = retry_reason
+      }
+    }
+    END {
+      start = count - 4
+      if (start < 1) {
+        start = 1
+      }
+      for (i = count; i >= start; i--) {
+        printf "### %s - %s\n", dates[i], run_ids[i]
+        printf "Story: %s\n", stories[i]
+        printf "Result: %s\n", results[i]
+        printf "Attempts: %s\n", attempts_list[i]
+        printf "Branch: %s\n", branches[i]
+        printf "Retry reason: %s\n\n", retry_reasons[i]
+      }
+    }
+  ' "$STORY_LOG" > "$temp_entries"
+
+  {
+    printf '# Recent Runs Memory\n\n'
+    printf 'Story type: %s\n' "$story_type"
+    printf 'Window: last 60 days (from %s)\n' "$cutoff_date"
+    printf 'Max entries: 5\n\n'
+    if [[ -s "$temp_entries" ]]; then
+      cat "$temp_entries"
+    else
+      printf 'No recent runs found for this story type.\n'
+    fi
+  } > "$recent_runs_file"
+
+  rm -f "$temp_entries"
+}
+
 read_validation_profile() {
   local run_dir="$1"
   local cmd
@@ -549,22 +798,33 @@ run_single_validation_command() {
   return "$exit_code"
 }
 
-run_codex_prompt() {
+build_prompt_text() {
   local prompt_file="$1"
-  local output_file="$2"
-  local skill_context_file="${3:-}"
+  shift || true
+  local context_file
   local prompt_text
 
   [[ -f "$prompt_file" ]] || fail "Missing prompt file: $prompt_file"
   [[ -s "$prompt_file" ]] || fail "Prompt file is empty: $prompt_file"
 
-  require_command codex
-
   prompt_text="$(cat "$prompt_file")"
-  if [[ -n "$skill_context_file" ]]; then
-    [[ -f "$skill_context_file" ]] || fail "Missing skill context file: $skill_context_file"
-    prompt_text+=$'\n\nRun-local instruction: Before doing any other work, read this file for skill context:\n'"$skill_context_file"
-  fi
+  for context_file in "$@"; do
+    [[ -n "$context_file" ]] || continue
+    [[ -f "$context_file" ]] || fail "Missing context file: $context_file"
+    prompt_text+=$'\n\nRun-local instruction: Before doing any other work, read this file:\n'"$context_file"
+  done
+
+  printf '%s' "$prompt_text"
+}
+
+run_codex_prompt() {
+  local prompt_file="$1"
+  local output_file="$2"
+  shift 2 || true
+  local prompt_text
+
+  require_command codex
+  prompt_text="$(build_prompt_text "$prompt_file" "$@")"
 
   (
     cd "$REPO_PATH"
@@ -577,16 +837,13 @@ run_codex_prompt() {
 run_codex_prompt_to_file() {
   local prompt_file="$1"
   local output_file="$2"
+  shift 2 || true
   local temp_output
   local exit_code
   local prompt_text
 
-  [[ -f "$prompt_file" ]] || fail "Missing prompt file: $prompt_file"
-  [[ -s "$prompt_file" ]] || fail "Prompt file is empty: $prompt_file"
-
   require_command codex
-
-  prompt_text="$(cat "$prompt_file")"
+  prompt_text="$(build_prompt_text "$prompt_file" "$@")"
   temp_output="$(mktemp)"
 
   set +e
@@ -608,21 +865,13 @@ run_codex_prompt_to_file() {
 
 run_codex_prompt_summary_only() {
   local prompt_file="$1"
-  local skill_context_file="${2:-}"
+  shift || true
   local temp_output
   local exit_code
   local prompt_text
 
-  [[ -f "$prompt_file" ]] || fail "Missing prompt file: $prompt_file"
-  [[ -s "$prompt_file" ]] || fail "Prompt file is empty: $prompt_file"
-
   require_command codex
-
-  prompt_text="$(cat "$prompt_file")"
-  if [[ -n "$skill_context_file" ]]; then
-    [[ -f "$skill_context_file" ]] || fail "Missing skill context file: $skill_context_file"
-    prompt_text+=$'\n\nRun-local instruction: Before doing any other work, read this file for skill context:\n'"$skill_context_file"
-  fi
+  prompt_text="$(build_prompt_text "$prompt_file" "$@")"
   temp_output="$(mktemp)"
 
   set +e
@@ -652,13 +901,39 @@ run_planner() {
   run_codex_prompt "$prompt_file" "$plan_file" "$skill_context_file"
 }
 
+is_test_writer_needed() {
+  local run_dir="$1"
+  local needed
+
+  needed="$(read_story_class_scalar "$run_dir" "test_writer_needed" | tr -d '\r' | xargs)"
+  [[ "$needed" == "true" ]]
+}
+
+run_test_writer() {
+  local run_dir="$1"
+  local test_plan_file="$run_dir/TEST-PLAN.md"
+  local prompt_file="$PROMPTS_DIR/test-writer.txt"
+  local skill_context_file="$run_dir/SKILL-CONTEXT.md"
+  local story_file="$run_dir/user-story.md"
+  local plan_file="$run_dir/PLAN.md"
+
+  log "Running test writer..."
+  run_codex_prompt "$prompt_file" "$test_plan_file" "$skill_context_file" "$story_file" "$plan_file"
+  [[ -s "$test_plan_file" ]] || fail "TEST-PLAN.md was not created or is empty: $test_plan_file"
+}
+
 run_implementer() {
   local run_dir="$1"
   local prompt_file="$PROMPTS_DIR/implementer.txt"
   local skill_context_file="$run_dir/SKILL-CONTEXT.md"
+  local test_plan_file="$run_dir/TEST-PLAN.md"
 
   log "Running implementer..."
-  run_codex_prompt_summary_only "$prompt_file" "$skill_context_file"
+  if [[ -f "$test_plan_file" ]]; then
+    run_codex_prompt_summary_only "$prompt_file" "$skill_context_file" "$test_plan_file"
+  else
+    run_codex_prompt_summary_only "$prompt_file" "$skill_context_file"
+  fi
 
   write_changed_files "$run_dir"
 }
@@ -695,9 +970,14 @@ run_reanalyzer() {
   local run_dir="$1"
   local fix_notes_file="$run_dir/FIX-NOTES.md"
   local prompt_file="$PROMPTS_DIR/re-analyzer.txt"
+  local recent_runs_file="$run_dir/RECENT-RUNS.md"
 
   log "Running re-analyzer..."
-  run_codex_prompt_to_file "$prompt_file" "$fix_notes_file"
+  if [[ -f "$recent_runs_file" ]]; then
+    run_codex_prompt_to_file "$prompt_file" "$fix_notes_file" "$recent_runs_file"
+  else
+    run_codex_prompt_to_file "$prompt_file" "$fix_notes_file"
+  fi
   [[ -s "$fix_notes_file" ]] || fail "FIX-NOTES.md was not created or is empty"
 
   write_changed_files "$run_dir"
@@ -763,6 +1043,24 @@ Reason: $blocked_reason
 EOF
 }
 
+finalize_branch_cleanup() {
+  if [[ "$BRANCH_CLEANUP_DONE" -eq 1 ]]; then
+    return 0
+  fi
+
+  if [[ -n "$ACTIVE_RUN_DIR" && -d "$ACTIVE_RUN_DIR" ]]; then
+    cleanup_branch "$ACTIVE_RUN_DIR" || true
+  fi
+
+  BRANCH_CLEANUP_DONE=1
+}
+
+on_exit() {
+  finalize_branch_cleanup
+}
+
+trap on_exit EXIT
+
 main() {
   [[ $# -ge 1 ]] || fail "Usage: ./agent-scrum.sh \"As a user I want ...\""
 
@@ -795,6 +1093,7 @@ main() {
 
   local run_dir="$RUNS_DIR/$run_id"
   mkdir -p "$run_dir"
+  ACTIVE_RUN_DIR="$run_dir"
 
   printf '%s\n' "$run_id" > "$LATEST_RUN_FILE"
   printf '%s\n' "$story" > "$run_dir/user-story.md"
@@ -807,6 +1106,11 @@ main() {
 
   generate_repo_snapshot "$run_dir"
   run_classifier "$run_dir"
+  build_memory_feed "$run_dir"
+  if [[ -f "$run_dir/RECENT-RUNS.md" ]]; then
+    run_classifier "$run_dir" "$run_dir/RECENT-RUNS.md"
+    build_memory_feed "$run_dir"
+  fi
 
   if is_story_blocked "$run_dir"; then
     local blocked_reason
@@ -820,9 +1124,13 @@ main() {
   fi
 
   load_skills "$run_dir"
+  manage_branch "$run_dir"
 
   run_planner "$run_dir"
   [[ -s "$run_dir/PLAN.md" ]] || fail "PLAN.md is missing or empty after planner"
+  if is_test_writer_needed "$run_dir"; then
+    run_test_writer "$run_dir"
+  fi
 
   run_implementer "$run_dir"
   clean_generated_artifacts
@@ -849,6 +1157,7 @@ main() {
     attempts=$((attempts + 1))
     log "Run failed on attempt $attempts/$MAX_RETRIES"
     write_run_meta "$run_id" "$run_date" "RETRYING" "$attempts" "$run_dir"
+    set_run_meta_field "$run_dir" "RETRY_REASON" "Validation failure required retry attempt $attempts."
 
     run_reanalyzer "$run_dir"
     clean_generated_artifacts

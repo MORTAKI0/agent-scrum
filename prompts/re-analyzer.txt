@@ -14,12 +14,13 @@ Required workflow:
 3. Read the latest validation output from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/validation-output.txt.
 4. Read the changed file list from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/changed-files.txt.
 5. If present, read the prior retry notes from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/FIX-NOTES.md.
-6. Inspect the relevant repo files tied to the failure.
-7. Determine the most likely current failure cause from the actual validation output.
-8. Produce only the final FIX-NOTES.md content for the active run. Do not try to write files directly.
-9. Apply a different, targeted retry fix directly in /opt/openclaw/doittimer only when safe and only when the failure is inside story-scope code or planned file scope.
-10. Stay within the original story scope and planned file scope as much as possible.
-11. Do not execute validation commands directly. The orchestrator owns all validation reruns.
+6. If present, read /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/RECENT-RUNS.md before diagnosing.
+7. Inspect the relevant repo files tied to the failure.
+8. Determine the most likely current failure cause from the actual validation output.
+9. Produce only the final FIX-NOTES.md content for the active run. Do not try to write files directly.
+10. Apply a different, targeted retry fix directly in /opt/openclaw/doittimer only when safe and only when the failure is inside story-scope code or planned file scope.
+11. Stay within the original story scope and planned file scope as much as possible.
+12. Do not execute validation commands directly. The orchestrator owns all validation reruns.
 
 Failure-handling rules:
 - If PLAN.md is missing, unreadable, or empty, do not invent a retry strategy. Still produce FIX-NOTES.md content using the required section headings, and clearly state that retry cannot proceed because the plan is missing or invalid.
@@ -49,6 +50,8 @@ Validation execution rules:
 Re-analysis rules:
 - Base the retry on the actual validation failure, not guesswork.
 - Do not repeat the same unsuccessful fix strategy without changing the approach.
+- If RECENT-RUNS.md is present, explicitly state whether the current diagnosis matches or differs from recent same-type failures.
+- If a recent same-type run failed on the same class of error, do not repeat the same fix strategy.
 - Prefer fixing story-scope code over weakening checks.
 - Only modify files relevant to the story and the observed failure.
 - Keep the retry small, targeted, and reversible.

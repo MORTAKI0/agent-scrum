@@ -212,3 +212,48 @@ Artifacts:
 - /opt/openclaw/agent-scrum/workspace/runs/US7-2026-04-05/validation-output.txt
 - /opt/openclaw/agent-scrum/workspace/runs/US7-2026-04-05/FAILURE-REPORT.md
 ---
+## 2026-04-05
+Run ID: US8-2026-04-05
+Story: As a user I want a moderate-risk dashboard interaction upgrade that adds keyboard navigation and status controls across multiple existing dashboard cards, with matching tests, so rollout should run on a dedicated feature branch for safety.
+Type: frontend-feature
+Result: FAIL
+Attempts: 0
+Branch: feature/us8-dashboard-keyboard-status-controls
+Retry reason: none
+Files changed:
+- app/(app)/dashboard/NarrativeTimelineShell.tsx
+- app/(app)/dashboard/OpenLoopsCard.tsx
+- app/globals.css
+- tests/e2e/dashboard-optimized.spec.ts
+Artifacts:
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/repo-snapshot.md
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/story-class.md
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/SKILL-CONTEXT.md
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/PLAN.md
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/RECENT-RUNS.md
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/TEST-PLAN.md
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/validation-output.txt
+- /opt/openclaw/agent-scrum/workspace/runs/US8-2026-04-05/FAILURE-REPORT.md
+---
+## 2026-04-05
+Run ID: US10-2026-04-05
+Story: As a user I want a moderate-risk dashboard interaction upgrade that adds keyboard navigation and status controls across existing dashboard cards, with matching tests, and should run on a dedicated feature branch for safety.
+Type: frontend-feature
+Result: FAIL
+Attempts: 0
+Branch: feature/us10-dashboard-keyboard-status-controls
+Retry reason: none
+Files changed:
+- app/(app)/dashboard/DashboardOptimizedView.tsx
+- app/globals.css
+- tests/e2e/dashboard-optimized.spec.ts
+Artifacts:
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/repo-snapshot.md
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/story-class.md
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/SKILL-CONTEXT.md
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/PLAN.md
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/RECENT-RUNS.md
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/TEST-PLAN.md
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/validation-output.txt
+- /opt/openclaw/agent-scrum/workspace/runs/US10-2026-04-05/FAILURE-REPORT.md
+---

@@ -12,15 +12,17 @@ Required workflow:
 1. Read /opt/openclaw/agent-scrum/workspace/latest-run.txt to get the current RUN_ID.
 2. Read the injected skill context from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/SKILL-CONTEXT.md before reading the plan.
 3. Read the active plan from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/PLAN.md.
-4. If PLAN.md is missing, unreadable, or empty, do not invent implementation. Stop clearly and explain that implementation cannot proceed because the active plan is missing or invalid.
-5. Inspect the relevant files in /opt/openclaw/doittimer named in PLAN.md before editing.
-6. Implement only the tasks described in PLAN.md.
-7. Keep the change minimal, coherent, and aligned with existing repo conventions.
-8. Do not modify files outside the planned scope unless a tiny adjacent change is strictly required to make the planned change work. If that happens, keep it minimal and explain it in the final summary.
-9. After making the change, output a short implementation summary for the current run only.
+4. If /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/TEST-PLAN.md exists, read it and treat it as required test intent for this run.
+5. If PLAN.md is missing, unreadable, or empty, do not invent implementation. Stop clearly and explain that implementation cannot proceed because the active plan is missing or invalid.
+6. Inspect the relevant files in /opt/openclaw/doittimer named in PLAN.md before editing.
+7. Implement only the tasks described in PLAN.md.
+8. Keep the change minimal, coherent, and aligned with existing repo conventions.
+9. Do not modify files outside the planned scope unless a tiny adjacent change is strictly required to make the planned change work. If that happens, keep it minimal and explain it in the final summary.
+10. After making the change, output a short implementation summary for the current run only.
 
 Implementation rules:
 - Follow PLAN.md as the contract.
+- If TEST-PLAN.md is present, implementation must make the listed tests pass in addition to satisfying PLAN.md acceptance criteria.
 - Follow SKILL-CONTEXT.md conventions exactly.
 - If SKILL-CONTEXT.md conflicts with PLAN.md on conventions or file locations, follow SKILL-CONTEXT.md and note the conflict in Notes.
 - Only edit files listed in the plan.
