@@ -9,13 +9,16 @@ Environment:
 
 Required workflow:
 1. Read /opt/openclaw/agent-scrum/workspace/latest-run.txt to get the current RUN_ID.
-2. Read the active story from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/user-story.md.
-3. If the story file is missing, unreadable, or empty, do not fake a plan. Still produce PLAN.md content using the required section headings, and clearly state in Risks / Unknowns that planning cannot proceed because the story file is missing or invalid.
-4. Inspect the codebase in /opt/openclaw/doittimer before planning. Read the relevant files needed to map the story to the existing implementation.
-5. Produce only the final PLAN.md content for the active run. Do not try to write files directly.
+2. Read the injected skill context from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/SKILL-CONTEXT.md before inspecting the repo.
+3. Read the active story from /opt/openclaw/agent-scrum/workspace/runs/<RUN_ID>/user-story.md.
+4. If the story file is missing, unreadable, or empty, do not fake a plan. Still produce PLAN.md content using the required section headings, and clearly state in Risks / Unknowns that planning cannot proceed because the story file is missing or invalid.
+5. Inspect the codebase in /opt/openclaw/doittimer before planning. Read the relevant files needed to map the story to the existing implementation.
+6. Produce only the final PLAN.md content for the active run. Do not try to write files directly.
 
 Planning rules:
 - Ground the plan in the actual repository contents.
+- Treat SKILL-CONTEXT.md as injected guidance: trust its file map and respect its pitfalls unless the repository clearly contradicts them.
+- Do not invent file paths that conflict with SKILL-CONTEXT.md.
 - Use exact repo-relative file paths only.
 - Keep scope narrow and directly tied to the story.
 - When the story wording is ambiguous, prefer the smallest safe interpretation supported by the current repo.
